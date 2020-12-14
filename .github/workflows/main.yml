@@ -1,0 +1,109 @@
+name: Flask CI-CD pipeline
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - deploy
+  pull_request:
+    branches:
+      - main
+      - dev
+      - deploy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.7
+        id: setup-python-3-7
+        uses: actions/setup-python@v1
+        with:
+          python-version: "3.7"
+      - name: Get pip cache dir
+        id: pip-cache
+        run: |
+          echo "::set-output name=dir::$(pip cache dir)"
+      - name: Cache pip
+        id: pip-cache-restore
+        uses: actions/cache@v1
+        with:
+          path: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Install dependencies
+        id: pip-install-dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run unit tests
+        id: run-tests
+        run: |
+          python test_application.py
+      - uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          steps: ${{ toJson(steps) }}
+          channel: '#github'
+        if: always()
+  # deploy to test env
+  deploy-to-test:
+    # Only run this job if "build" has ended successfully
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.7
+        id: setup-python-3-7
+        uses: actions/setup-python@v1
+        with:
+          python-version: "3.7"  
+      - name: Get pip cache dir
+        id: pip-cache
+        run: |
+          echo "::set-output name=dir::$(pip cache dir)"
+      - name: Cache pip
+        id: pip-cache-restore
+        uses: actions/cache@v1
+        with:
+          path: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Get EB CLI version
+        id: get-eb-cli-version
+        run: |
+          python -m pip install --upgrade pip
+          pip install awsebcli --upgrade
+          eb --version
+      - name: Configure AWS Credentials
+        id: config-aws-credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+      - name: Create EBS application
+        id: create-eb-application
+        run: |
+          eb init -p python-3.7 hello-world --region ${{ secrets.AWS_DEFAULT_REGION }}
+      
+      - name: Create test environment & deploy
+        id: create-test-env
+        run: |
+          (eb use test-environment && eb status test-environment && eb deploy) || eb create test-environment
+      
+      - uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          steps: ${{ toJson(steps) }}
+          channel: '#github'
+        if: always()
